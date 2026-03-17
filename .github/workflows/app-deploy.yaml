@@ -55,7 +55,7 @@ jobs:
 
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "environment=${environment}" >> "$GITHUB_OUTPUT"
-          echo "architectures=$(yq e '.arch | join(",")' ${config})" >> "$GITHUB_OUTPUT"
+          echo "architectures=$(yq e -o=json '.arch' ${config})" >> "$GITHUB_OUTPUT"
 
   build-and-push:
     name: Build & Push ${{ matrix.arch }}
@@ -63,7 +63,7 @@ jobs:
     needs: information
     strategy:
       matrix:
-        arch: ${{ fromJson(format('["{0}"]', join(fromJson(format('"{0}"', needs.information.outputs.architectures)), '","'))) }}
+        arch: ${{ fromJson(needs.information.outputs.architectures) }}
       fail-fast: false
     permissions:
       contents: read
@@ -132,10 +132,9 @@ jobs:
           slug="${{ needs.information.outputs.slug }}"
           version="${{ needs.information.outputs.version }}"
           registry="ghcr.io/${{ github.repository_owner }}"
-          archs="${{ needs.information.outputs.architectures }}"
-
+          # Parse JSON array of architectures
           tags=""
-          for arch in ${archs//,/ }; do
+          for arch in $(echo '${{ needs.information.outputs.architectures }}' | jq -r '.[]'); do
             tags="${tags} ${registry}/${slug}:${version}-${arch}"
           done
 
