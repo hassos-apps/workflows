@@ -1,0 +1,164 @@
+---
+name: Deploy
+
+on:
+  workflow_call:
+    inputs:
+      addon:
+        description: Addon slug (directory name inside the repo)
+        required: true
+        type: string
+    secrets:
+      DISPATCH_TOKEN:
+        description: PAT with repo scope to trigger repository dispatch
+        required: true
+
+jobs:
+  information:
+    name: Gather addon information
+    runs-on: ubuntu-latest
+    outputs:
+      architectures: ${{ steps.information.outputs.architectures }}
+      build_date: ${{ steps.information.outputs.build_date }}
+      description: ${{ steps.information.outputs.description }}
+      environment: ${{ steps.information.outputs.environment }}
+      name: ${{ steps.information.outputs.name }}
+      slug: ${{ steps.information.outputs.slug }}
+      version: ${{ steps.information.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read addon info
+        id: information
+        run: |
+          slug="${{ inputs.addon }}"
+          config="${slug}/config.yaml"
+
+          echo "slug=${slug}" >> "$GITHUB_OUTPUT"
+          echo "build_date=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> "$GITHUB_OUTPUT"
+          echo "name=$(yq e '.name' ${config})" >> "$GITHUB_OUTPUT"
+          echo "description=$(yq e '.description' ${config})" >> "$GITHUB_OUTPUT"
+
+          # Determine version and environment
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            version="${{ github.event.release.tag_name }}"
+            if [[ "${{ github.event.release.prerelease }}" == "true" ]]; then
+              environment="beta"
+            else
+              environment="stable"
+            fi
+          else
+            version="edge"
+            environment="edge"
+          fi
+
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "environment=${environment}" >> "$GITHUB_OUTPUT"
+          echo "architectures=$(yq e '.arch | join(",")' ${config})" >> "$GITHUB_OUTPUT"
+
+  build-and-push:
+    name: Build & Push ${{ matrix.arch }}
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    needs: information
+    strategy:
+      matrix:
+        arch: ${{ fromJson(format('["{0}"]', join(fromJson(format('"{0}"', needs.information.outputs.architectures)), '","'))) }}
+      fail-fast: false
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Read build_from
+        id: build_from
+        run: |
+          arch="${{ matrix.arch }}"
+          build_from=$(yq e ".build_from.${arch}" ${{ inputs.addon }}/build.yaml)
+          echo "base=${build_from}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push (${{ matrix.arch }})
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ inputs.addon }}
+          file: ./${{ inputs.addon }}/Dockerfile
+          platforms: linux/${{ matrix.arch == 'aarch64' && 'arm64' || 'amd64' }}
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/${{ needs.information.outputs.slug }}:${{ needs.information.outputs.version }}-${{ matrix.arch }}
+          cache-from: type=gha,scope=${{ inputs.addon }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ inputs.addon }}-${{ matrix.arch }}
+          build-args: |
+            BUILD_FROM=${{ steps.build_from.outputs.base }}
+            BUILD_ARCH=${{ matrix.arch }}
+            BUILD_DATE=${{ needs.information.outputs.build_date }}
+            BUILD_NAME=${{ needs.information.outputs.name }}
+            BUILD_DESCRIPTION=${{ needs.information.outputs.description }}
+            BUILD_VERSION=${{ needs.information.outputs.version }}
+            BUILD_REF=${{ github.sha }}
+            BUILD_REPOSITORY=${{ github.repository }}
+
+  manifest:
+    name: Create multi-arch manifest
+    runs-on: ubuntu-latest
+    needs: [information, build-and-push]
+    permissions:
+      packages: write
+    steps:
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Create and push manifest
+        run: |
+          slug="${{ needs.information.outputs.slug }}"
+          version="${{ needs.information.outputs.version }}"
+          registry="ghcr.io/${{ github.repository_owner }}"
+          archs="${{ needs.information.outputs.architectures }}"
+
+          tags=""
+          for arch in ${archs//,/ }; do
+            tags="${tags} ${registry}/${slug}:${version}-${arch}"
+          done
+
+          docker buildx imagetools create \
+            --tag "${registry}/${slug}:${version}" \
+            --tag "${registry}/${slug}:${{ needs.information.outputs.environment }}" \
+            ${tags}
+
+  notify-repository:
+    name: Notify repository
+    runs-on: ubuntu-latest
+    needs: [information, manifest]
+    if: needs.information.outputs.environment != 'edge' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    steps:
+      - name: Dispatch update to repository
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.DISPATCH_TOKEN }}
+          repository: ${{ github.repository_owner }}/repository
+          event-type: update
+          client-payload: |
+            {
+              "addon": "${{ needs.information.outputs.slug }}",
+              "version": "${{ needs.information.outputs.version }}",
+              "repository": "${{ github.repository }}"
+            }

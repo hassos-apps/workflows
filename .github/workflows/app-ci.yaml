@@ -1,0 +1,102 @@
+---
+name: CI
+
+on:
+  workflow_call:
+    inputs:
+      addon:
+        description: Addon slug (directory name inside the repo)
+        required: true
+        type: string
+
+jobs:
+  information:
+    name: Gather addon information
+    runs-on: ubuntu-latest
+    outputs:
+      architectures: ${{ steps.information.outputs.architectures }}
+      build_date: ${{ steps.information.outputs.build_date }}
+      description: ${{ steps.information.outputs.description }}
+      name: ${{ steps.information.outputs.name }}
+      slug: ${{ steps.information.outputs.slug }}
+      version: ${{ steps.information.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read addon info
+        id: information
+        run: |
+          slug="${{ inputs.addon }}"
+          config="${slug}/config.yaml"
+
+          echo "slug=${slug}" >> "$GITHUB_OUTPUT"
+          echo "build_date=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> "$GITHUB_OUTPUT"
+          echo "name=$(yq e '.name' ${config})" >> "$GITHUB_OUTPUT"
+          echo "description=$(yq e '.description' ${config})" >> "$GITHUB_OUTPUT"
+          echo "version=$(yq e '.version' ${config})" >> "$GITHUB_OUTPUT"
+          echo "architectures=$(yq e '.arch | join(",")' ${config})" >> "$GITHUB_OUTPUT"
+
+  lint-addon:
+    name: Lint addon
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Lint YAML
+        run: |
+          pip install yamllint
+          yamllint -d relaxed ${{ inputs.addon }}/config.yaml ${{ inputs.addon }}/build.yaml
+
+      - name: Lint Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: ${{ inputs.addon }}/Dockerfile
+          ignore: DL3008,DL3018
+
+      - name: Shellcheck
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          scandir: ./${{ inputs.addon }}/rootfs
+
+  build:
+    name: Build ${{ matrix.arch }}
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    needs: information
+    strategy:
+      matrix:
+        arch: ${{ fromJson(format('["{0}"]', join(fromJson(format('"{0}"', needs.information.outputs.architectures)), '","'))) }}
+      fail-fast: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Read build_from
+        id: build_from
+        run: |
+          arch="${{ matrix.arch }}"
+          build_from=$(yq e ".build_from.${arch}" ${{ inputs.addon }}/build.yaml)
+          echo "base=${build_from}" >> "$GITHUB_OUTPUT"
+
+      - name: Build (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ inputs.addon }}
+          file: ./${{ inputs.addon }}/Dockerfile
+          platforms: linux/${{ matrix.arch == 'aarch64' && 'arm64' || 'amd64' }}
+          push: false
+          cache-from: type=gha,scope=${{ inputs.addon }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ inputs.addon }}-${{ matrix.arch }}
+          build-args: |
+            BUILD_FROM=${{ steps.build_from.outputs.base }}
+            BUILD_ARCH=${{ matrix.arch }}
+            BUILD_DATE=${{ needs.information.outputs.build_date }}
+            BUILD_NAME=${{ needs.information.outputs.name }}
+            BUILD_DESCRIPTION=${{ needs.information.outputs.description }}
+            BUILD_VERSION=${{ needs.information.outputs.version }}
+            BUILD_REF=${{ github.sha }}
+            BUILD_REPOSITORY=${{ github.repository }}
