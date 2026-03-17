@@ -55,7 +55,7 @@ jobs:
 
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "environment=${environment}" >> "$GITHUB_OUTPUT"
-          echo "architectures=$(yq e -o=json '.arch' ${config})" >> "$GITHUB_OUTPUT"
+          echo "architectures=$(yq e -o=json -I=0 '.arch' ${config})" >> "$GITHUB_OUTPUT"
 
   build-and-push:
     name: Build & Push ${{ matrix.arch }}

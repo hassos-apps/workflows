@@ -35,7 +35,7 @@ jobs:
           echo "name=$(yq e '.name' ${config})" >> "$GITHUB_OUTPUT"
           echo "description=$(yq e '.description' ${config})" >> "$GITHUB_OUTPUT"
           echo "version=$(yq e '.version' ${config})" >> "$GITHUB_OUTPUT"
-          echo "architectures=$(yq e -o=json '.arch' ${config})" >> "$GITHUB_OUTPUT"
+          echo "architectures=$(yq e -o=json -I=0 '.arch' ${config})" >> "$GITHUB_OUTPUT"
 
   lint-addon:
     name: Lint addon
