@@ -97,7 +97,8 @@ jobs:
           platforms: linux/${{ matrix.arch == 'aarch64' && 'arm64' || 'amd64' }}
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/${{ needs.information.outputs.slug }}:${{ needs.information.outputs.version }}-${{ matrix.arch }}
+            ghcr.io/${{ github.repository_owner }}/${{ needs.information.outputs.slug }}-${{ matrix.arch }}:${{ needs.information.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/${{ needs.information.outputs.slug }}-${{ matrix.arch }}:${{ needs.information.outputs.environment }}
           cache-from: type=gha,scope=${{ inputs.addon }}-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ inputs.addon }}-${{ matrix.arch }}
           build-args: |
@@ -131,16 +132,18 @@ jobs:
         run: |
           slug="${{ needs.information.outputs.slug }}"
           version="${{ needs.information.outputs.version }}"
+          environment="${{ needs.information.outputs.environment }}"
           registry="ghcr.io/${{ github.repository_owner }}"
-          # Parse JSON array of architectures
+
+          # Create multi-arch manifest from per-arch images
           tags=""
           for arch in $(echo '${{ needs.information.outputs.architectures }}' | jq -r '.[]'); do
-            tags="${tags} ${registry}/${slug}:${version}-${arch}"
+            tags="${tags} ${registry}/${slug}-${arch}:${version}"
           done
 
           docker buildx imagetools create \
             --tag "${registry}/${slug}:${version}" \
-            --tag "${registry}/${slug}:${{ needs.information.outputs.environment }}" \
+            --tag "${registry}/${slug}:${environment}" \
             ${tags}
 
   notify-repository:
