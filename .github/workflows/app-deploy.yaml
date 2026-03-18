@@ -43,6 +43,7 @@ jobs:
           # Determine version and environment
           if [[ "${{ github.event_name }}" == "release" ]]; then
             version="${{ github.event.release.tag_name }}"
+            version="${version#v}"
             if [[ "${{ github.event.release.prerelease }}" == "true" ]]; then
               environment="beta"
             else
